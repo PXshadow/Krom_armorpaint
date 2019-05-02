@@ -65,6 +65,13 @@
 #include <unistd.h>
 #endif
 
+#ifdef KORE_WINDOWS
+#include <d3d11.h>
+#include <D3Dcompiler.h>
+#include <strstream>
+#endif
+#include <nfd.h>
+
 const int KROM_API = 2;
 const int KROM_DEBUG_API = 1;
 
@@ -605,10 +612,108 @@ namespace {
 	}
 
 	JsValueRef CALLBACK krom_create_vertex_shader_from_source(JsValueRef callee, bool isConstructCall, JsValueRef *arguments, unsigned short argumentCount, void *callbackState) {
+		#ifdef KORE_WINDOWS
+		size_t length;
+		JsCopyString(arguments[1], tempStringVS, tempStringSize, &length);
+		tempStringVS[length] = 0;
+		
+		ID3DBlob* errorMessage;
+		ID3DBlob* shaderBuffer;
+		UINT flags = D3DCOMPILE_SKIP_OPTIMIZATION | D3DCOMPILE_SKIP_VALIDATION;// D3DCOMPILE_OPTIMIZATION_LEVEL0
+		HRESULT hr = D3DCompile(tempStringVS, length, nullptr, nullptr, nullptr, "main", "vs_5_0", flags, 0, &shaderBuffer, &errorMessage);
+		if (hr != S_OK) {
+			Kore::log(Kore::Info, "%s", (char*)errorMessage->GetBufferPointer());
+			return JS_INVALID_REFERENCE;
+		}
+
+		// bool hasBone = strstr(tempStringVS, "bone :") != NULL;
+		// bool hasCol = strstr(tempStringVS, "col :") != NULL;
+		bool hasNor = strstr(tempStringVS, "nor :") != NULL;
+		bool hasPos = strstr(tempStringVS, "pos :") != NULL;
+		// bool hasTang = strstr(tempStringVS, "tang :") != NULL;
+		bool hasTex = strstr(tempStringVS, "tex :") != NULL;
+		// bool hasWeight = strstr(tempStringVS, "weight :") != NULL;
+
+		std::map<std::string, int> attributes;
+		int index = 0;
+		// if (hasBone) attributes["bone"] = index++;
+		// if (hasCol) attributes["col"] = index++;
+		if (hasNor) attributes["nor"] = index++;
+		if (hasPos) attributes["pos"] = index++;
+		// if (hasTang) attributes["tang"] = index++;
+		if (hasTex) attributes["tex"] = index++;
+		// if (hasWeight) attributes["weight"] = index++;
+
+		char* output = tempStringVS;
+		std::ostrstream file(output, 1024 * 1024);
+		int outputlength = 0;
+
+		file.put((char)attributes.size()); outputlength += 1;
+		for (std::map<std::string, int>::const_iterator attribute = attributes.begin(); attribute != attributes.end(); ++attribute) {
+			(file) << attribute->first.c_str(); outputlength += attribute->first.length();
+			file.put(0); outputlength += 1;
+			file.put(attribute->second); outputlength += 1;
+		}
+
+		ID3D11ShaderReflection* reflector = nullptr;
+		D3DReflect(shaderBuffer->GetBufferPointer(), shaderBuffer->GetBufferSize(), IID_ID3D11ShaderReflection, (void**)&reflector);
+
+		D3D11_SHADER_DESC desc;
+		reflector->GetDesc(&desc);
+
+		file.put(desc.BoundResources); outputlength += 1;
+		for (unsigned i = 0; i < desc.BoundResources; ++i) {
+			D3D11_SHADER_INPUT_BIND_DESC bindDesc;
+			reflector->GetResourceBindingDesc(i, &bindDesc);
+			(file) << bindDesc.Name; outputlength += strlen(bindDesc.Name);
+			file.put(0); outputlength += 1;
+			file.put(bindDesc.BindPoint); outputlength += 1;
+		}
+
+		ID3D11ShaderReflectionConstantBuffer* constants = reflector->GetConstantBufferByName("$Globals");
+		D3D11_SHADER_BUFFER_DESC bufferDesc;
+		hr = constants->GetDesc(&bufferDesc);
+		if (hr == S_OK) {
+			file.put(bufferDesc.Variables); outputlength += 1;
+			for (unsigned i = 0; i < bufferDesc.Variables; ++i) {
+				ID3D11ShaderReflectionVariable* variable = constants->GetVariableByIndex(i);
+				D3D11_SHADER_VARIABLE_DESC variableDesc;
+				hr = variable->GetDesc(&variableDesc);
+				if (hr == S_OK) {
+					(file) << variableDesc.Name; outputlength += strlen(variableDesc.Name);
+					file.put(0); outputlength += 1;
+					file.write((char*)&variableDesc.StartOffset, 4); outputlength += 4;
+					file.write((char*)&variableDesc.Size, 4); outputlength += 4;
+					D3D11_SHADER_TYPE_DESC typeDesc;
+					hr = variable->GetType()->GetDesc(&typeDesc);
+					if (hr == S_OK) {
+						file.put(typeDesc.Columns); outputlength += 1;
+						file.put(typeDesc.Rows); outputlength += 1;
+					}
+					else {
+						file.put(0); outputlength += 1;
+						file.put(0); outputlength += 1;
+					}
+				}
+			}
+		}
+		else {
+			file.put(0); outputlength += 1;
+		}
+		file.write((char*)shaderBuffer->GetBufferPointer(), shaderBuffer->GetBufferSize()); outputlength += shaderBuffer->GetBufferSize();
+		shaderBuffer->Release();
+		reflector->Release();
+
+		Kore::Graphics4::Shader* shader = new Kore::Graphics4::Shader(output, outputlength, Kore::Graphics4::VertexShader);
+
+		#else
+		
 		size_t length;
 		JsCopyString(arguments[1], tempStringVS, tempStringSize, &length);
 		tempStringVS[length] = 0;
 		Kore::Graphics4::Shader* shader = new Kore::Graphics4::Shader(tempStringVS, Kore::Graphics4::VertexShader);
+		
+		#endif
 
 		JsValueRef value;
 		JsCreateExternalObject(shader, nullptr, &value);
@@ -631,10 +736,87 @@ namespace {
 	}
 
 	JsValueRef CALLBACK krom_create_fragment_shader_from_source(JsValueRef callee, bool isConstructCall, JsValueRef *arguments, unsigned short argumentCount, void *callbackState) {
+		#ifdef KORE_WINDOWS
+		size_t length;
+		JsCopyString(arguments[1], tempStringFS, tempStringSize, &length);
+		tempStringFS[length] = 0;
+		
+		ID3DBlob* errorMessage;
+		ID3DBlob* shaderBuffer;
+		UINT flags = D3DCOMPILE_SKIP_OPTIMIZATION | D3DCOMPILE_SKIP_VALIDATION;// D3DCOMPILE_OPTIMIZATION_LEVEL0
+		HRESULT hr = D3DCompile(tempStringFS, length, nullptr, nullptr, nullptr, "main", "ps_5_0", flags, 0, &shaderBuffer, &errorMessage);
+		if (hr != S_OK) {
+			Kore::log(Kore::Info, "%s", (char*)errorMessage->GetBufferPointer());
+			return JS_INVALID_REFERENCE;
+		}
+
+		std::map<std::string, int> attributes;
+
+		char* output = tempStringFS;
+		std::ostrstream file(output, 1024 * 1024);
+		int outputlength = 0;
+
+		file.put((char)attributes.size()); outputlength += 1;
+
+		ID3D11ShaderReflection* reflector = nullptr;
+		D3DReflect(shaderBuffer->GetBufferPointer(), shaderBuffer->GetBufferSize(), IID_ID3D11ShaderReflection, (void**)&reflector);
+
+		D3D11_SHADER_DESC desc;
+		reflector->GetDesc(&desc);
+
+		file.put(desc.BoundResources); outputlength += 1;
+		for (unsigned i = 0; i < desc.BoundResources; ++i) {
+			D3D11_SHADER_INPUT_BIND_DESC bindDesc;
+			reflector->GetResourceBindingDesc(i, &bindDesc);
+			(file) << bindDesc.Name; outputlength += strlen(bindDesc.Name);
+			file.put(0); outputlength += 1;
+			file.put(bindDesc.BindPoint); outputlength += 1;
+		}
+
+		ID3D11ShaderReflectionConstantBuffer* constants = reflector->GetConstantBufferByName("$Globals");
+		D3D11_SHADER_BUFFER_DESC bufferDesc;
+		hr = constants->GetDesc(&bufferDesc);
+		if (hr == S_OK) {
+			file.put(bufferDesc.Variables); outputlength += 1;
+			for (unsigned i = 0; i < bufferDesc.Variables; ++i) {
+				ID3D11ShaderReflectionVariable* variable = constants->GetVariableByIndex(i);
+				D3D11_SHADER_VARIABLE_DESC variableDesc;
+				hr = variable->GetDesc(&variableDesc);
+				if (hr == S_OK) {
+					(file) << variableDesc.Name; outputlength += strlen(variableDesc.Name);
+					file.put(0); outputlength += 1;
+					file.write((char*)&variableDesc.StartOffset, 4); outputlength += 4;
+					file.write((char*)&variableDesc.Size, 4); outputlength += 4;
+					D3D11_SHADER_TYPE_DESC typeDesc;
+					hr = variable->GetType()->GetDesc(&typeDesc);
+					if (hr == S_OK) {
+						file.put(typeDesc.Columns); outputlength += 1;
+						file.put(typeDesc.Rows); outputlength += 1;
+					}
+					else {
+						file.put(0); outputlength += 1;
+						file.put(0); outputlength += 1;
+					}
+				}
+			}
+		}
+		else {
+			file.put(0); outputlength += 1;
+		}
+		file.write((char*)shaderBuffer->GetBufferPointer(), shaderBuffer->GetBufferSize()); outputlength += shaderBuffer->GetBufferSize();
+		shaderBuffer->Release();
+		reflector->Release();
+
+		Kore::Graphics4::Shader* shader = new Kore::Graphics4::Shader(output, outputlength, Kore::Graphics4::FragmentShader);
+
+		#else
+
 		size_t length;
 		JsCopyString(arguments[1], tempStringFS, tempStringSize, &length);
 		tempStringFS[length] = 0;
 		Kore::Graphics4::Shader* shader = new Kore::Graphics4::Shader(tempStringFS, Kore::Graphics4::FragmentShader);
+
+		#endif
 
 		JsValueRef value;
 		JsCreateExternalObject(shader, nullptr, &value);
@@ -2418,6 +2600,46 @@ namespace {
 		return JS_INVALID_REFERENCE;
 	}
 
+	JsValueRef CALLBACK krom_open_dialog(JsValueRef callee, bool isConstructCall, JsValueRef *arguments, unsigned short argumentCount, void *callbackState) {
+		// char filterList[1024];
+		// size_t length;
+		// JsCopyString(arguments[1], filterList, 1023, &length);
+		// filterList[length] = 0;
+		// char defaultPath[1024];
+		// size_t length;
+		// JsCopyString(arguments[2], defaultPath, 1023, &length);
+		// defaultPath[length] = 0;
+		JsValueRef value;
+		nfdchar_t *outPath = NULL;
+			nfdresult_t result = NFD_OpenDialog(NULL, NULL, &outPath);
+			if (result == NFD_OKAY) {
+			JsCreateString(outPath, strlen(outPath), &value);
+			// free(outPath);
+			return value;
+		}
+		else if (result == NFD_CANCEL) {}
+		else {
+			Kore::log(Kore::Info, "Error: %s\n", NFD_GetError());
+		}
+		return JS_INVALID_REFERENCE;
+	}
+
+	JsValueRef CALLBACK krom_save_dialog(JsValueRef callee, bool isConstructCall, JsValueRef *arguments, unsigned short argumentCount, void *callbackState) {
+		JsValueRef value;
+		nfdchar_t *outPath = NULL;
+		nfdresult_t result = NFD_SaveDialog(NULL, NULL, &outPath);
+		if (result == NFD_OKAY) {
+			JsCreateString(outPath, strlen(outPath), &value);
+			// free(outPath);
+			return value;
+		}
+		else if (result == NFD_CANCEL) {}
+		else {
+			Kore::log(Kore::Info, "Error: %s\n", NFD_GetError());
+		}
+		return JS_INVALID_REFERENCE;
+	}
+
 #define addFunction(name, funcName) JsPropertyIdRef name##Id;\
 	JsValueRef name##Func;\
 	JsCreateFunction(funcName, nullptr, &name##Func);\
@@ -2571,6 +2793,8 @@ namespace {
 		addFunction(getConstantLocationCompute, krom_get_constant_location_compute);
 		addFunction(getTextureUnitCompute, krom_get_texture_unit_compute);
 		addFunction(compute, krom_compute);
+		addFunction(openDialog, krom_open_dialog);
+		addFunction(saveDialog, krom_save_dialog);
 
 		JsValueRef global;
 		JsGetGlobalObject(&global);
